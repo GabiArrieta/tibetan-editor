@@ -13,10 +13,13 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
 
+// Auth temporarily disabled — set to false to bypass login page and run in local mode.
+// To re-enable, remove the `false ||` below.
 export const isSupabaseConfigured =
-  !!supabaseUrl &&
+  false ||
+  (!!supabaseUrl &&
   !!supabaseAnonKey &&
-  supabaseUrl !== 'https://TU_PROJECT_ID.supabase.co'
+  supabaseUrl !== 'https://TU_PROJECT_ID.supabase.co')
 
 export const supabase: SupabaseClient | null = isSupabaseConfigured
   ? createClient(supabaseUrl!, supabaseAnonKey!)
