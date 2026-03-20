@@ -13,7 +13,12 @@
  *
  * Cada usuario tiene su propio "folder" aislado por RLS.
  * Los colaboradores acceden a las fuentes del dueño del documento
- * a través de signed URLs generadas on-demand.
+ * a través de signed URLs generadas on-demand (ver schema-v3-security.sql
+ * para la política "Collaborator font read").
+ *
+ * CAMBIO DE SEGURIDAD (v3): el userId ya no se acepta como parámetro externo.
+ * Se deriva siempre de supabase.auth.getUser() para evitar path traversal
+ * accidental (pasar un userId diferente al propio).
  */
 
 import { supabase } from './client'
@@ -22,6 +27,13 @@ import type { FontEntry } from '../../types/document'
 const BUCKET = 'fonts'
 const SIGNED_URL_EXPIRY = 3600  // 1 hora
 
+/** Obtener el user ID autenticado actualmente. Devuelve null si no hay sesión. */
+async function getCurrentUserId(): Promise<string | null> {
+  if (!supabase) return null
+  const { data: { user } } = await supabase.auth.getUser()
+  return user?.id ?? null
+}
+
 // ---------------------------------------------------------------------------
 // Upload
 // ---------------------------------------------------------------------------
@@ -29,13 +41,16 @@ const SIGNED_URL_EXPIRY = 3600  // 1 hora
 /**
  * Subir una fuente a Supabase Storage.
  * Solo se ejecuta si el usuario acepta explícitamente el aviso de licencia.
+ * El userId se deriva internamente — no se acepta como parámetro externo.
  */
 export async function uploadFontToCloud(
   buffer: ArrayBuffer,
-  entry: FontEntry,
-  userId: string
+  entry: FontEntry
 ): Promise<{ url?: string; error?: string }> {
   if (!supabase) return { error: 'Supabase no configurado.' }
+
+  const userId = await getCurrentUserId()
+  if (!userId) return { error: 'No autenticado.' }
 
   const path = `${userId}/${entry.storageKey}.${entry.format}`
   const mimeType = fontMime(entry.format)
@@ -53,7 +68,8 @@ export async function uploadFontToCloud(
 
 /**
  * Obtener una signed URL temporal para acceder a una fuente.
- * Los colaboradores usan esto para descargar fuentes del dueño del documento.
+ * Usada tanto por el dueño como por colaboradores (ver RLS "Collaborator font read").
+ * ownerUserId: el user_id del dueño de la fuente (no necesariamente el usuario actual).
  */
 export async function getFontSignedUrl(
   ownerUserId: string,
@@ -61,6 +77,10 @@ export async function getFontSignedUrl(
   format: string
 ): Promise<{ signedUrl?: string; error?: string }> {
   if (!supabase) return { error: 'Supabase no configurado.' }
+
+  // Verificar que hay sesión activa antes de intentar generar la URL
+  const userId = await getCurrentUserId()
+  if (!userId) return { error: 'No autenticado.' }
 
   const path = `${ownerUserId}/${storageKey}.${format}`
 
@@ -75,12 +95,16 @@ export async function getFontSignedUrl(
 /**
  * Descargar una fuente de Supabase Storage como ArrayBuffer.
  * Útil para inyectarla en CSS o en el motor PDF.
+ * ownerUserId: el user_id del dueño de la fuente.
  */
 export async function downloadFontFromCloud(
   ownerUserId: string,
   entry: FontEntry
 ): Promise<{ buffer?: ArrayBuffer; error?: string }> {
   if (!supabase) return { error: 'Supabase no configurado.' }
+
+  const userId = await getCurrentUserId()
+  if (!userId) return { error: 'No autenticado.' }
 
   const path = `${ownerUserId}/${entry.storageKey}.${entry.format}`
 
@@ -96,13 +120,16 @@ export async function downloadFontFromCloud(
 
 /**
  * Eliminar una fuente de Supabase Storage.
+ * Solo el dueño puede eliminar (el path incluye su userId, RLS bloquea a otros).
  */
 export async function deleteFontFromCloud(
-  userId: string,
   storageKey: string,
   format: string
 ): Promise<{ error?: string }> {
   if (!supabase) return { error: 'Supabase no configurado.' }
+
+  const userId = await getCurrentUserId()
+  if (!userId) return { error: 'No autenticado.' }
 
   const path = `${userId}/${storageKey}.${format}`
 
@@ -118,13 +145,14 @@ export async function deleteFontFromCloud(
  * Comprobar si una fuente existe en Supabase Storage.
  */
 export async function fontExistsInCloud(
-  userId: string,
   storageKey: string,
   format: string
 ): Promise<boolean> {
   if (!supabase) return false
 
-  const path = `${userId}/${storageKey}.${format}`
+  const userId = await getCurrentUserId()
+  if (!userId) return false
+
   const { data } = await supabase.storage.from(BUCKET).list(userId, {
     search: `${storageKey}.${format}`,
   })

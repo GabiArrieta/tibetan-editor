@@ -15,11 +15,18 @@ interface BlockViewProps {
   block: Block
   /** Index within document.blocks, used for visual ordering */
   blockIndex: number
+  commentCountForRow?: (rowId: string) => number
+  onAddComment?: (rowId: string) => void
 }
 
 const PT_TO_PX = 1.3333
 
-export const BlockView = React.memo(function BlockView({ block, blockIndex }: BlockViewProps) {
+export const BlockView = React.memo(function BlockView({
+  block,
+  blockIndex,
+  commentCountForRow,
+  onAddComment,
+}: BlockViewProps) {
   const addRowToBlock = useDocumentStore(s => s.addRowToBlock)
   const selectedRow = useEditorStore(s => s.selectedRow)
 
@@ -46,6 +53,8 @@ export const BlockView = React.memo(function BlockView({ block, blockIndex }: Bl
           blockId={block.id}
           row={row}
           isSelected={selectedRow?.rowId === row.id && selectedRow.blockId === block.id}
+          commentCount={commentCountForRow?.(row.id) ?? 0}
+          onAddComment={onAddComment}
         />
       ))}
 

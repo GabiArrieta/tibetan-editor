@@ -24,6 +24,11 @@ import { saveProjectToFile } from '../lib/persistence/projectIO'
 import { exportToPdf } from '../lib/pdf/pdfExport'
 import { exportToDocx } from '../lib/docx/docxExport'
 
+// Access the temporal store outside React — safe for imperative calls
+function getHistory() {
+  return useDocumentStore.temporal.getState()
+}
+
 interface ShortcutOptions {
   onSaveComplete?: () => void
   onExportStart?: () => void
@@ -45,6 +50,20 @@ export function useKeyboardShortcuts(options: ShortcutOptions = {}) {
   useEffect(() => {
     const handler = async (e: KeyboardEvent) => {
       const ctrl = e.ctrlKey || e.metaKey
+
+      // Ctrl+Z — undo  (capture phase overrides contenteditable native undo)
+      if (ctrl && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault()
+        getHistory().undo()
+        return
+      }
+
+      // Ctrl+Y or Ctrl+Shift+Z — redo
+      if (ctrl && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+        e.preventDefault()
+        getHistory().redo()
+        return
+      }
 
       // Ctrl+S — save
       if (ctrl && e.key === 's' && !e.shiftKey) {
@@ -131,7 +150,8 @@ export function useKeyboardShortcuts(options: ShortcutOptions = {}) {
       }
     }
 
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
+    // Use capture phase so Ctrl+Z/Y intercept before contenteditable native undo
+    window.addEventListener('keydown', handler, true)
+    return () => window.removeEventListener('keydown', handler, true)
   }, [doc, selectedRow, zoom, duplicateRow, removeRow, moveRow, setImportAssistantOpen, setZoom, setDirty, options])
 }

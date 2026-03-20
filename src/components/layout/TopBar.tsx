@@ -5,8 +5,8 @@
  * indicador de usuario autenticado y estado de sync.
  */
 
-import React, { useState, useCallback } from 'react'
-import { useDocumentStore } from '../../store/documentStore'
+import React, { useState, useCallback, useRef } from 'react'
+import { useDocumentStore, useDocumentHistory } from '../../store/documentStore'
 import { useEditorStore } from '../../store/editorStore'
 import { useAuthStore } from '../../store/authStore'
 import { useCloudStore } from '../../store/cloudStore'
@@ -18,8 +18,13 @@ import { saveDocumentToCloud } from '../../lib/supabase/cloudSync'
 import { isSupabaseConfigured } from '../../lib/supabase/client'
 import { Button } from '../shared/Button'
 
-export function TopBar() {
+interface TopBarProps {
+  onOpenProjectBrowser?(): void
+}
+
+export function TopBar({ onOpenProjectBrowser }: TopBarProps) {
   const doc = useDocumentStore(s => s.document)
+  const setTitle = useDocumentStore(s => s.setTitle)
   const loadDocument = useDocumentStore(s => s.loadDocument)
   const newDocument = useDocumentStore(s => s.newDocument)
 
@@ -41,8 +46,13 @@ export function TopBar() {
   const setAuthModalOpen = useCloudStore(s => s.setAuthModalOpen)
   const setDocumentBrowserOpen = useCloudStore(s => s.setDocumentBrowserOpen)
 
+  const { undo, redo, canUndo, canRedo } = useDocumentHistory()
+
   const [exportStatus, setExportStatus] = useState<string | null>(null)
   const [isExporting, setIsExporting] = useState(false)
+  const [isTitleEditing, setIsTitleEditing] = useState(false)
+  const [titleDraft, setTitleDraft] = useState('')
+  const titleInputRef = useRef<HTMLInputElement>(null)
 
   // ── Local file actions ───────────────────────────────────────────────────
 
@@ -133,6 +143,34 @@ export function TopBar() {
       {/* Brand */}
       <span className="text-indigo-400 font-semibold text-sm shrink-0 mr-1">Tibetan Editor</span>
 
+      {/* ── Proyectos ── */}
+      {onOpenProjectBrowser && (
+        <>
+          <Button size="sm" variant="ghost" onClick={onOpenProjectBrowser} title="Gestionar proyectos">
+            Proyectos
+          </Button>
+          <div className="w-px h-5 bg-slate-700 mx-0.5 shrink-0" />
+        </>
+      )}
+
+      {/* ── Undo / Redo ── */}
+      <Button
+        size="sm"
+        variant="ghost"
+        onClick={() => undo()}
+        disabled={!canUndo}
+        title="Deshacer (Ctrl+Z)"
+      >↩</Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        onClick={() => redo()}
+        disabled={!canRedo}
+        title="Rehacer (Ctrl+Y)"
+      >↪</Button>
+
+      <div className="w-px h-5 bg-slate-700 mx-0.5 shrink-0" />
+
       {/* ── Local file ── */}
       <Button size="sm" variant="ghost" onClick={handleNewDocument}>Nuevo</Button>
       <Button size="sm" variant="ghost" onClick={handleLoad}>Abrir</Button>
@@ -180,10 +218,43 @@ export function TopBar() {
 
       <div className="flex-1" />
 
-      {/* ── Document title ── */}
-      <span className="text-sm text-slate-300 truncate max-w-[180px] shrink-0" title={doc.title}>
-        {doc.title}{isDirty ? ' ●' : ''}
-      </span>
+      {/* ── Document title (inline editable) ── */}
+      {isTitleEditing ? (
+        <input
+          ref={titleInputRef}
+          className="text-sm text-white bg-slate-700 border border-indigo-500 rounded px-1.5 py-0 h-6 max-w-[180px] shrink-0 outline-none"
+          value={titleDraft}
+          onChange={e => setTitleDraft(e.target.value)}
+          onBlur={() => {
+            const trimmed = titleDraft.trim()
+            if (trimmed) setTitle(trimmed)
+            setIsTitleEditing(false)
+          }}
+          onKeyDown={e => {
+            if (e.key === 'Enter') {
+              const trimmed = titleDraft.trim()
+              if (trimmed) setTitle(trimmed)
+              setIsTitleEditing(false)
+            }
+            if (e.key === 'Escape') {
+              setIsTitleEditing(false)
+            }
+          }}
+          autoFocus
+          onFocus={e => e.currentTarget.select()}
+        />
+      ) : (
+        <button
+          className="text-sm text-slate-300 hover:text-white truncate max-w-[180px] shrink-0 cursor-text text-left hover:bg-slate-700/50 rounded px-1 py-0 h-6 transition-colors"
+          title="Clic para editar el título"
+          onClick={() => {
+            setTitleDraft(doc.title)
+            setIsTitleEditing(true)
+          }}
+        >
+          {doc.title}{isDirty ? ' ●' : ''}
+        </button>
+      )}
 
       <div className="w-px h-5 bg-slate-700 mx-0.5 shrink-0" />
 

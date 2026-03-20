@@ -6,11 +6,29 @@
  */
 
 import { create } from 'zustand'
+import { useStore } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
+import { temporal } from 'zundo'
 import { v4 as uuid } from 'uuid'
+
+// ---------------------------------------------------------------------------
+// Debounce helper — avoids an extra dependency just for this
+// ---------------------------------------------------------------------------
+
+function debounce<TArgs extends unknown[]>(
+  fn: (...args: TArgs) => void,
+  ms: number
+): (...args: TArgs) => void {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  return (...args: TArgs) => {
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(() => { fn(...args); timer = null }, ms)
+  }
+}
 import type {
   TibetanDocument,
   Block,
+  BlockType,
   Row,
   Lane,
   LaneKey,
@@ -20,6 +38,9 @@ import type {
   FontEntry,
   StylePreset,
   PageSettings,
+  SpecialPageData,
+  CoverPageData,
+  BackPageData,
 } from '../types/document'
 import {
   DEFAULT_PAGE_SETTINGS,
@@ -28,7 +49,12 @@ import {
   DEFAULT_TRANSLATION_STYLE,
   DEFAULT_ROW_LAYOUT,
   DEFAULT_BLOCK_LAYOUT,
+  DEFAULT_COVER_DATA,
+  DEFAULT_BACK_DATA,
 } from '../types/document'
+
+// Re-export so callers can import helpers without touching the types barrel
+export type { BlockType, SpecialPageData, CoverPageData, BackPageData }
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -52,10 +78,33 @@ export function makeRow(overrides?: Partial<Row>): Row {
 export function makeBlock(overrides?: Partial<Block>): Block {
   return {
     id: uuid(),
+    blockType: 'content',
     label: undefined,
     rows: [makeRow()],
     layout: { ...DEFAULT_BLOCK_LAYOUT },
     ...overrides,
+  }
+}
+
+export function makeCoverBlock(): Block {
+  return {
+    id: uuid(),
+    blockType: 'cover',
+    label: 'Portada',
+    rows: [],
+    layout: { ...DEFAULT_BLOCK_LAYOUT },
+    special: { type: 'cover', cover: { ...DEFAULT_COVER_DATA } },
+  }
+}
+
+export function makeBackBlock(): Block {
+  return {
+    id: uuid(),
+    blockType: 'back',
+    label: 'Página final',
+    rows: [],
+    layout: { ...DEFAULT_BLOCK_LAYOUT },
+    special: { type: 'back', back: { ...DEFAULT_BACK_DATA } },
   }
 }
 
@@ -97,9 +146,13 @@ interface DocumentStore {
 
   // Block operations
   addBlock(): void
+  addCoverBlock(): void
+  addBackBlock(): void
   removeBlock(blockId: string): void
   updateBlockLayout(blockId: string, patch: Partial<BlockLayout>): void
   updateBlockLabel(blockId: string, label: string): void
+  updateBlockType(blockId: string, blockType: BlockType): void
+  updateSpecialData(blockId: string, special: SpecialPageData): void
   moveBlock(blockId: string, direction: 'up' | 'down'): void
 
   // Row operations
@@ -110,11 +163,38 @@ interface DocumentStore {
   moveRow(blockId: string, rowId: string, direction: 'up' | 'down'): void
   splitRow(blockId: string, rowId: string, lane: LaneKey, cursorOffset: number): void
   mergeRowWithNext(blockId: string, rowId: string): void
+  /**
+   * Merge this row's lane texts onto the previous row, then delete this row.
+   * Used by the Backspace-at-start handler in LaneEditor.
+   * No-op if rowId is already the first row in the block.
+   */
+  mergeRowWithPrev(blockId: string, rowId: string): void
+  /**
+   * Distribute multiple lines of text across consecutive rows starting from rowId.
+   *
+   * - lines[0] → replaces the current row's lane text (at cursor position,
+   *   inserting before the existing text after the cursor)
+   * - lines[1..N] → N new rows inserted after the current row, each receiving
+   *   one line. The other two lanes in the new rows inherit styles but are empty.
+   *
+   * Returns the ID of the last row in the sequence so the caller can focus it.
+   */
+  insertRowsAfterFromLines(
+    blockId: string,
+    rowId: string,
+    lane: LaneKey,
+    cursorOffset: number,
+    lines: string[]
+  ): string | null
   updateRowLayout(blockId: string, rowId: string, patch: Partial<RowLayout>): void
 
   // Lane operations
   updateLaneText(blockId: string, rowId: string, lane: LaneKey, text: string): void
   updateLaneStyle(blockId: string, rowId: string, lane: LaneKey, patch: Partial<TextStyle>): void
+
+  // Comment refs on rows (commentIds are managed by commentStore; rows only carry IDs)
+  addCommentIdToRow(blockId: string, rowId: string, commentId: string): void
+  removeCommentIdFromRow(blockId: string, rowId: string, commentId: string): void
 }
 
 // ---------------------------------------------------------------------------
@@ -130,7 +210,8 @@ function findRow(block: Block, rowId: string): Row | undefined {
 }
 
 export const useDocumentStore = create<DocumentStore>()(
-  immer((set) => ({
+  temporal(
+  immer((set, _get) => ({
     document: makeNewDocument(),
 
     setTitle: (title) => set(state => { state.document.title = title }),
@@ -168,8 +249,21 @@ export const useDocumentStore = create<DocumentStore>()(
 
     addBlock: () => set(state => { state.document.blocks.push(makeBlock()) }),
 
+    addCoverBlock: () => set(state => {
+      const hasCover = state.document.blocks.some(b => b.blockType === 'cover')
+      if (!hasCover) state.document.blocks.unshift(makeCoverBlock())
+    }),
+
+    addBackBlock: () => set(state => {
+      const hasBack = state.document.blocks.some(b => b.blockType === 'back')
+      if (!hasBack) state.document.blocks.push(makeBackBlock())
+    }),
+
     removeBlock: (blockId) => set(state => {
-      if (state.document.blocks.length <= 1) return
+      const isContent = (b: Block) => !b.blockType || b.blockType === 'content'
+      const contentBlocks = state.document.blocks.filter(isContent)
+      const block = state.document.blocks.find(b => b.id === blockId)
+      if (block && isContent(block) && contentBlocks.length <= 1) return
       state.document.blocks = state.document.blocks.filter(b => b.id !== blockId)
     }),
 
@@ -181,6 +275,16 @@ export const useDocumentStore = create<DocumentStore>()(
     updateBlockLabel: (blockId, label) => set(state => {
       const b = findBlock(state.document, blockId)
       if (b) b.label = label
+    }),
+
+    updateBlockType: (blockId, blockType) => set(state => {
+      const b = findBlock(state.document, blockId)
+      if (b) b.blockType = blockType
+    }),
+
+    updateSpecialData: (blockId, special) => set(state => {
+      const b = findBlock(state.document, blockId)
+      if (b) b.special = special
     }),
 
     moveBlock: (blockId, direction) => set(state => {
@@ -276,6 +380,64 @@ export const useDocumentStore = create<DocumentStore>()(
       b.rows.splice(idx + 1, 1)
     }),
 
+    mergeRowWithPrev: (blockId, rowId) => set(state => {
+      const b = findBlock(state.document, blockId)
+      if (!b) return
+      const idx = b.rows.findIndex(r => r.id === rowId)
+      // No previous row — nothing to do
+      if (idx <= 0) return
+      const prev = b.rows[idx - 1]
+      const current = b.rows[idx]
+
+      // Append each lane's text onto the previous row
+      ;(['tibetan', 'phonetic', 'translation'] as LaneKey[]).forEach(lane => {
+        prev[lane].text = prev[lane].text + current[lane].text
+      })
+
+      b.rows.splice(idx, 1)
+    }),
+
+    insertRowsAfterFromLines: (blockId, rowId, lane, cursorOffset, lines) => {
+      if (!lines.length) return null
+
+      // Pre-compute UUIDs before entering the immer set() so we can return
+      // the last row's ID to the caller for focus management.
+      const extraRowIds: string[] = lines.slice(1).map(() => uuid())
+
+      set(state => {
+        const b = findBlock(state.document, blockId)
+        if (!b) return
+        const idx = b.rows.findIndex(r => r.id === rowId)
+        if (idx < 0) return
+        const currentRow = b.rows[idx]
+
+        // The text before the cursor stays in the current row's lane,
+        // with lines[0] appended. Text after the cursor goes to the LAST new row.
+        const textBeforeCursor = currentRow[lane].text.slice(0, cursorOffset)
+        const textAfterCursor  = currentRow[lane].text.slice(cursorOffset)
+
+        currentRow[lane].text = textBeforeCursor + lines[0]
+
+        // Build new rows for lines[1..N-1], and append textAfterCursor to the last one
+        const newRows = lines.slice(1).map((lineText, i) => {
+          const newRow = makeRow()
+          newRow.id = extraRowIds[i]
+          const isLast = i === lines.length - 2
+          newRow[lane].text = isLast ? lineText + textAfterCursor : lineText
+          newRow[lane].style = { ...currentRow[lane].style }
+          newRow.layout = { ...currentRow.layout }
+          return newRow
+        })
+
+        b.rows.splice(idx + 1, 0, ...newRows)
+      })
+
+      // Return the ID of the last row so the caller can focus it
+      return extraRowIds.length > 0
+        ? extraRowIds[extraRowIds.length - 1]
+        : rowId
+    },
+
     updateRowLayout: (blockId, rowId, patch) => set(state => {
       const b = findBlock(state.document, blockId)
       if (!b) return
@@ -298,5 +460,47 @@ export const useDocumentStore = create<DocumentStore>()(
       const r = findRow(b, rowId)
       if (r) Object.assign(r[lane].style, patch)
     }),
-  }))
+
+    // Comment refs
+
+    addCommentIdToRow: (blockId, rowId, commentId) => set(state => {
+      const b = findBlock(state.document, blockId)
+      if (!b) return
+      const r = findRow(b, rowId)
+      if (!r) return
+      if (!r.commentIds) r.commentIds = []
+      if (!r.commentIds.includes(commentId)) r.commentIds.push(commentId)
+    }),
+
+    removeCommentIdFromRow: (blockId, rowId, commentId) => set(state => {
+      const b = findBlock(state.document, blockId)
+      if (!b) return
+      const r = findRow(b, rowId)
+      if (r?.commentIds) {
+        r.commentIds = r.commentIds.filter(id => id !== commentId)
+      }
+    }),
+  })),
+  {
+    // Only snapshot the document content, not UI-related store slices
+    partialize: (state) => ({ document: state.document }),
+    // Debounce 1 s so continuous typing collapses into a single undo step
+    handleSet: (handleSet) => debounce(handleSet, 1000),
+    // Keep up to 100 history entries
+    limit: 100,
+  }
+  )
 )
+
+// ---------------------------------------------------------------------------
+// Convenience hook — undo / redo with reactive enabled-state
+// Each selector returns a primitive so React's Object.is comparison is stable.
+// ---------------------------------------------------------------------------
+
+export function useDocumentHistory() {
+  const undo    = useStore(useDocumentStore.temporal, s => s.undo)
+  const redo    = useStore(useDocumentStore.temporal, s => s.redo)
+  const canUndo = useStore(useDocumentStore.temporal, s => s.pastStates.length > 0)
+  const canRedo = useStore(useDocumentStore.temporal, s => s.futureStates.length > 0)
+  return { undo, redo, canUndo, canRedo }
+}

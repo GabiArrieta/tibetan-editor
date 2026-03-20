@@ -9,7 +9,7 @@
  * Solo se muestra si Supabase está configurado.
  */
 
-import React, { useState } from 'react'
+import React, { useState, useCallback } from 'react'
 import { useAuthStore } from '../../store/authStore'
 import { isSupabaseConfigured } from '../../lib/supabase/client'
 import { Button } from '../shared/Button'
@@ -20,37 +20,56 @@ interface AuthModalProps {
   onClose(): void
 }
 
+const ERROR_LABELS: Record<string, string> = {
+  'Invalid login credentials': 'Email o contraseña incorrectos.',
+  'Email not confirmed': 'Confirmá tu email antes de iniciar sesión.',
+  'User already registered': 'Ya existe una cuenta con ese email.',
+  'Email rate limit exceeded': 'Demasiados intentos. Esperá antes de reintentar.',
+}
+
+function humanizeError(raw: string): string {
+  if (ERROR_LABELS[raw]) return ERROR_LABELS[raw]
+  for (const [key, label] of Object.entries(ERROR_LABELS)) {
+    if (raw.toLowerCase().includes(key.toLowerCase())) return label
+  }
+  return 'Ocurrió un error. Intentá de nuevo.'
+}
+
 export function AuthModal({ onClose }: AuthModalProps) {
-  const [mode, setMode] = useState<AuthMode>('signin')
+  const [mode, setMode] = useState<AuthMode>('magic')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [magicSent, setMagicSent] = useState(false)
+  const [signUpPending, setSignUpPending] = useState(false)
   const [loading, setLoading] = useState(false)
 
   const signInWithEmail = useAuthStore(s => s.signInWithEmail)
   const signUpWithEmail = useAuthStore(s => s.signUpWithEmail)
   const signInWithMagicLink = useAuthStore(s => s.signInWithMagicLink)
-  const error = useAuthStore(s => s.error)
+  const rawError = useAuthStore(s => s.error)
   const clearError = useAuthStore(s => s.clearError)
+
+  const displayError = rawError ? humanizeError(rawError) : null
 
   if (!isSupabaseConfigured) return null
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
     clearError()
 
     if (mode === 'magic') {
       const { sent } = await signInWithMagicLink(email)
-      setMagicSent(sent)
+      if (sent) setMagicSent(true)
     } else if (mode === 'signup') {
       await signUpWithEmail(email, password)
+      if (!useAuthStore.getState().error) setSignUpPending(true)
     } else {
       await signInWithEmail(email, password)
     }
 
     setLoading(false)
-  }
+  }, [mode, email, password, signInWithMagicLink, signUpWithEmail, signInWithEmail, clearError])
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -73,8 +92,20 @@ export function AuthModal({ onClose }: AuthModalProps) {
               Te enviamos un enlace de acceso a <strong>{email}</strong>.
               Hacé clic en él para entrar.
             </p>
-            <Button variant="ghost" size="sm" className="mt-4" onClick={() => setMagicSent(false)}>
+            <Button variant="ghost" size="sm" className="mt-4" onClick={() => { setMagicSent(false); setEmail('') }}>
               Usar otro email
+            </Button>
+          </div>
+        ) : signUpPending ? (
+          <div className="text-center py-4">
+            <p className="text-2xl mb-3">✉️</p>
+            <p className="text-white font-medium mb-1">Confirmá tu email</p>
+            <p className="text-slate-400 text-sm">
+              Enviamos un email de confirmación a <strong>{email}</strong>.
+              Confirmalo para activar tu cuenta.
+            </p>
+            <Button variant="ghost" size="sm" className="mt-4" onClick={() => { setSignUpPending(false); setMode('magic'); clearError() }}>
+              Volver al inicio
             </Button>
           </div>
         ) : (
@@ -107,9 +138,9 @@ export function AuthModal({ onClose }: AuthModalProps) {
               </div>
             )}
 
-            {error && (
+            {displayError && (
               <p className="text-red-400 text-xs bg-red-900/20 border border-red-800/40 rounded px-2 py-1.5">
-                {error}
+                {displayError}
               </p>
             )}
 

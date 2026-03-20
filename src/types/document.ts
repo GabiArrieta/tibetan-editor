@@ -11,6 +11,16 @@ export type FontRole = 'tibetan' | 'phonetic' | 'translation' | 'ui'
 export type FontFormat = 'ttf' | 'woff' | 'woff2' | 'otf'
 export type LaneKey = 'tibetan' | 'phonetic' | 'translation'
 
+/**
+ * Block type discriminant.
+ * 'content'         — normal trilingual rows (default)
+ * 'cover'           — portada / cover page (uses special.coverData)
+ * 'back'            — página final / colophon (uses special.backData)
+ * 'index'           — tabla de contenidos (auto-generated)
+ * 'section-heading' — título de sección (rendereado con estilo de heading)
+ */
+export type BlockType = 'content' | 'cover' | 'back' | 'index' | 'section-heading'
+
 // ---------------------------------------------------------------------------
 // Page settings
 // ---------------------------------------------------------------------------
@@ -27,6 +37,10 @@ export interface PageSettings {
   marginLeftMm: number
   showPageNumbers: boolean
   pageNumberPosition: 'bottom-center' | 'bottom-right' | 'bottom-left'
+  /** Page number starts counting from this value (default 1) */
+  pageNumberStartAt: number
+  /** If true, cover page is excluded from numbering (not counted) */
+  pageNumberSkipCover: boolean
   header?: string
   footer?: string
 }
@@ -41,6 +55,8 @@ export const DEFAULT_PAGE_SETTINGS: PageSettings = {
   marginLeftMm: 20,
   showPageNumbers: false,
   pageNumberPosition: 'bottom-center',
+  pageNumberStartAt: 1,
+  pageNumberSkipCover: true,
 }
 
 // ---------------------------------------------------------------------------
@@ -184,6 +200,8 @@ export interface Row {
   phonetic: Lane
   translation: Lane
   layout: RowLayout
+  /** IDs of comments attached to this row (references commentStore, not serialised inline) */
+  commentIds?: string[]
 }
 
 // ---------------------------------------------------------------------------
@@ -206,17 +224,89 @@ export const DEFAULT_BLOCK_LAYOUT: BlockLayout = {
   paddingRightPt: 0,
 }
 
+// ---------------------------------------------------------------------------
+// Special page data (for cover, back, index blocks)
+// ---------------------------------------------------------------------------
+
+export interface CoverPageData {
+  title: string
+  subtitle?: string
+  author?: string
+  institution?: string
+  additionalText?: string
+  /** Supabase Storage path or base64 data URL for the cover image */
+  imageUrl?: string
+  footerText?: string
+}
+
+export interface BackPageData {
+  text: string
+  /** Optional second text column or additional paragraph */
+  secondaryText?: string
+}
+
+export interface SectionHeadingData {
+  level: 1 | 2 | 3
+}
+
+export type SpecialPageData =
+  | { type: 'cover'; cover: CoverPageData }
+  | { type: 'back'; back: BackPageData }
+  | { type: 'index' }
+  | { type: 'section-heading'; heading: SectionHeadingData }
+
+export const DEFAULT_COVER_DATA: CoverPageData = {
+  title: 'Título del documento',
+  subtitle: '',
+  author: '',
+  institution: '',
+  additionalText: '',
+  footerText: '',
+}
+
+export const DEFAULT_BACK_DATA: BackPageData = {
+  text: '',
+}
+
+// ---------------------------------------------------------------------------
+// Block — a logical grouping of rows (e.g. a stanza or section)
+// ---------------------------------------------------------------------------
+
 export interface Block {
   id: string
-  /** Optional label shown in the sidebar (not rendered in output) */
+  /**
+   * Block type discriminant. Defaults to 'content' if absent (backward compatible
+   * with documents saved before this field was introduced).
+   */
+  blockType?: BlockType
+  /** Optional label shown in the sidebar (not rendered in output for content blocks) */
   label?: string
   rows: Row[]
   layout: BlockLayout
+  /** Populated only for non-content block types */
+  special?: SpecialPageData
 }
 
 // ---------------------------------------------------------------------------
 // Top-level document
 // ---------------------------------------------------------------------------
+
+/**
+ * Optional per-lane source text for the "continuous flow" model.
+ *
+ * Each field stores the full text of one lane as pasted or imported by the
+ * user — newline-separated, one segment per line. The rows[] array is the
+ * canonical segmented representation used for editing and rendering; flowContent
+ * is a reference buffer that enables re-sync and provides a "whole flow" view.
+ *
+ * This field is fully optional and backward-compatible: documents saved before
+ * this field was introduced load normally with flowContent === undefined.
+ */
+export interface FlowContent {
+  tibetan?: string
+  phonetic?: string
+  translation?: string
+}
 
 export interface TibetanDocument {
   id: string
@@ -231,4 +321,9 @@ export interface TibetanDocument {
   fontRegistry: FontEntry[]
   stylePresets: StylePreset[]
   blocks: Block[]
+  /**
+   * Optional raw source text per lane, used as a reference buffer for the
+   * continuous-flow editing model. Not used directly for rendering.
+   */
+  flowContent?: FlowContent
 }

@@ -17,6 +17,10 @@ interface PageViewProps {
   /** 1-based page number */
   pageNumber: number
   zoom: number
+  /** Returns the number of open comments for a row id */
+  commentCountForRow?: (rowId: string) => number
+  /** Called when user clicks the add-comment button on a row */
+  onAddComment?: (rowId: string) => void
 }
 
 export const PageView = React.memo(function PageView({
@@ -24,6 +28,8 @@ export const PageView = React.memo(function PageView({
   pageBlocks,
   pageNumber,
   zoom,
+  commentCountForRow,
+  onAddComment,
 }: PageViewProps) {
   const { pageSettings } = doc
   const { widthMm, heightMm, marginTopMm, marginRightMm, marginBottomMm, marginLeftMm } = pageSettings
@@ -42,7 +48,7 @@ export const PageView = React.memo(function PageView({
     boxShadow: '0 4px 24px rgba(0,0,0,0.25)',
     borderRadius: '1px',
     transformOrigin: 'top center',
-    transform: `scale(${zoom})`,
+    transform: zoom !== 1 ? `scale(${zoom})` : undefined,
   }
 
   return (
@@ -53,6 +59,8 @@ export const PageView = React.memo(function PageView({
             key={block.id}
             block={block}
             blockIndex={idx}
+            commentCountForRow={commentCountForRow}
+            onAddComment={onAddComment}
           />
         ))}
 
