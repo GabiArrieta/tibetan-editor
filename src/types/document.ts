@@ -291,6 +291,23 @@ export interface Block {
 // Top-level document
 // ---------------------------------------------------------------------------
 
+/**
+ * Optional per-lane source text for the "continuous flow" model.
+ *
+ * Each field stores the full text of one lane as pasted or imported by the
+ * user — newline-separated, one segment per line. The rows[] array is the
+ * canonical segmented representation used for editing and rendering; flowContent
+ * is a reference buffer that enables re-sync and provides a "whole flow" view.
+ *
+ * This field is fully optional and backward-compatible: documents saved before
+ * this field was introduced load normally with flowContent === undefined.
+ */
+export interface FlowContent {
+  tibetan?: string
+  phonetic?: string
+  translation?: string
+}
+
 export interface TibetanDocument {
   id: string
   title: string
@@ -304,4 +321,9 @@ export interface TibetanDocument {
   fontRegistry: FontEntry[]
   stylePresets: StylePreset[]
   blocks: Block[]
+  /**
+   * Optional raw source text per lane, used as a reference buffer for the
+   * continuous-flow editing model. Not used directly for rendering.
+   */
+  flowContent?: FlowContent
 }

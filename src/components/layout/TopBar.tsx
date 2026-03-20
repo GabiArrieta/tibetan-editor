@@ -6,7 +6,7 @@
  */
 
 import React, { useState, useCallback, useRef } from 'react'
-import { useDocumentStore } from '../../store/documentStore'
+import { useDocumentStore, useDocumentHistory } from '../../store/documentStore'
 import { useEditorStore } from '../../store/editorStore'
 import { useAuthStore } from '../../store/authStore'
 import { useCloudStore } from '../../store/cloudStore'
@@ -45,6 +45,8 @@ export function TopBar({ onOpenProjectBrowser }: TopBarProps) {
   const setLastCloudSave = useCloudStore(s => s.setLastCloudSave)
   const setAuthModalOpen = useCloudStore(s => s.setAuthModalOpen)
   const setDocumentBrowserOpen = useCloudStore(s => s.setDocumentBrowserOpen)
+
+  const { undo, redo, canUndo, canRedo } = useDocumentHistory()
 
   const [exportStatus, setExportStatus] = useState<string | null>(null)
   const [isExporting, setIsExporting] = useState(false)
@@ -150,6 +152,24 @@ export function TopBar({ onOpenProjectBrowser }: TopBarProps) {
           <div className="w-px h-5 bg-slate-700 mx-0.5 shrink-0" />
         </>
       )}
+
+      {/* ── Undo / Redo ── */}
+      <Button
+        size="sm"
+        variant="ghost"
+        onClick={() => undo()}
+        disabled={!canUndo}
+        title="Deshacer (Ctrl+Z)"
+      >↩</Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        onClick={() => redo()}
+        disabled={!canRedo}
+        title="Rehacer (Ctrl+Y)"
+      >↪</Button>
+
+      <div className="w-px h-5 bg-slate-700 mx-0.5 shrink-0" />
 
       {/* ── Local file ── */}
       <Button size="sm" variant="ghost" onClick={handleNewDocument}>Nuevo</Button>
