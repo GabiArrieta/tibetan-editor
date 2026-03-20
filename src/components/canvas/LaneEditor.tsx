@@ -15,12 +15,11 @@
  * - Paste (single line) → inserts text at cursor (existing behaviour)
  * - Paste (multi-line)  → distributes lines across consecutive rows (new behaviour)
  *
- * Visual constraint:
- * - Tibetan and phonetic lanes are single-line (white-space: nowrap) so that each
- *   row acts as a "frame" of the continuous flow. Text that does not fit is clipped
- *   and should be split into a new row via Enter or smart paste.
- * - Translation lane allows wrapping (white-space: pre-wrap) because translations
- *   are often longer than a single visual line.
+ * Visual layout:
+ * - All lanes use white-space: normal / overflow: visible so text is always visible.
+ * - Tibetan and phonetic wrap at tsek (་ U+0F0B, Unicode LB class BA) automatically.
+ * - Translation uses pre-wrap to honour explicit newlines.
+ * - Each row can be multi-line; Enter / Ctrl+Enter split to a new row explicitly.
  */
 
 import React, { useRef, useEffect, useCallback, KeyboardEvent } from 'react'
@@ -28,6 +27,7 @@ import type { LaneKey, TextStyle } from '../../types/document'
 import { useDocumentStore } from '../../store/documentStore'
 import { useEditorStore } from '../../store/editorStore'
 import { normaliseClipboardText } from '../../lib/operations/importParser'
+import { distributeTextAcrossFrames } from '../../lib/operations/textFit'
 
 interface LaneEditorProps {
   blockId: string
@@ -87,6 +87,8 @@ function isCaretAtStart(el: HTMLElement): boolean {
   return getCaretOffset(el) === 0
 }
 
+const PT_TO_PX = 1.3333 // 1pt ≈ 1.333px at 96dpi
+
 const LANE_LABELS: Record<LaneKey, string> = {
   tibetan: 'Tibetano',
   phonetic: 'Fonética',
@@ -126,6 +128,9 @@ export const LaneEditor = React.memo(function LaneEditor({
       el.textContent = text
       if (hadFocus) {
         requestAnimationFrame(() => {
+          // If focus has moved elsewhere (e.g. handleMultiLinePaste advanced to the
+          // next row), do not steal it back.
+          if (document.activeElement !== el) return
           const node = el.firstChild
           if (node) {
             const range = document.createRange()
@@ -156,8 +161,17 @@ export const LaneEditor = React.memo(function LaneEditor({
     const el = ref.current
     if (!el) return
 
-    // Enter → split row at cursor
+    // Enter / Ctrl+Enter → split row at cursor (create new row, same lane continues below)
+    // Both plain Enter and Ctrl+Enter split the row so users can explicitly advance to
+    // the next row of the same lane regardless of whether they use the modifier.
     if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      onSplitRequest(getCaretOffset(el))
+      return
+    }
+    // Explicit Ctrl+Enter alias — browsers may handle Enter+ctrl differently in some
+    // OS / IME combinations, so we intercept it here too for safety.
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault()
       onSplitRequest(getCaretOffset(el))
       return
@@ -201,26 +215,45 @@ export const LaneEditor = React.memo(function LaneEditor({
     const raw = e.clipboardData.getData('text/plain')
     const normalised = normaliseClipboardText(raw)
 
-    // Split on any combination of CR/LF, filter out blank lines
-    const lines = normalised.split(/\r?\n/).filter(l => l.length > 0)
+    // Step 1 — split on explicit newlines
+    const paragraphs = normalised.split(/\r\n|\r|\n|\u2028|\u2029/).filter(l => l.length > 0)
+    if (paragraphs.length === 0) return
 
-    if (lines.length <= 1) {
-      // Single-line paste: insert at cursor as before
-      document.execCommand('insertText', false, normalised)
-    } else {
-      // Multi-line paste: distribute across rows
-      const offset = ref.current ? getCaretOffset(ref.current) : 0
-      onMultiLinePaste(offset, lines)
+    // Step 2 — for each paragraph, further split by visual fitting in the current
+    // frame. This is the key structural overflow fix: long single-line text (e.g.
+    // a paragraph of Tibetan with no explicit newlines) is measured against the
+    // lane editor's current clientWidth and split into frame-sized chunks.
+    // Each chunk becomes one row in the document, distributed by distributeLaneAcrossRows.
+    const el = ref.current
+    const allFrameLines: string[] = []
+    for (const para of paragraphs) {
+      const fitted = distributeTextAcrossFrames(para, lane, el)
+      allFrameLines.push(...fitted)
     }
-  }, [onMultiLinePaste])
 
-  // Tibetan and phonetic lanes are single-line: long text is clipped rather than
-  // wrapped within the row so each row acts as one "frame" of the continuous flow.
-  // Translation is allowed to wrap since translations are often multi-line.
+    const offset = el ? getCaretOffset(el) : 0
+    onMultiLinePaste(offset, allFrameLines)
+  }, [onMultiLinePaste, lane])
+
+  // Frame capacity model:
+  // - Tibetan and phonetic are "single-line frames": exactly one visual line tall.
+  //   Paste always distributes content so only the fitting portion lands here.
+  //   overflow: hidden clips any text that exceeds the frame (e.g. from manual typing)
+  //   without growing the row. The user can split with Enter / Ctrl+Enter.
+  // - Translation frames allow up to 4 visual lines (translations are often longer).
+  //   They use pre-wrap to respect explicit newlines.
+  const ONE_LINE_PX = style.fontSize * (style.lineHeight ?? 1.4) * PT_TO_PX
   const laneStyle: React.CSSProperties = {
     ...textStyleToCss(style),
     whiteSpace: lane === 'translation' ? 'pre-wrap' : 'nowrap',
-    overflow: lane === 'translation' ? 'visible' : 'hidden',
+    overflowWrap: 'break-word',
+    overflow: 'hidden',
+    // Fix the height to exactly one line (tibetan/phonetic) or up to 4 lines (translation)
+    height: lane === 'translation' ? undefined : `${ONE_LINE_PX}px`,
+    maxHeight: lane === 'translation' ? `${ONE_LINE_PX * 4}px` : undefined,
+    // Clip any overflow text — it should have been distributed to the next frame at paste time
+    textOverflow: 'clip',
+    display: 'block',
   }
 
   return (

@@ -186,6 +186,23 @@ interface DocumentStore {
     cursorOffset: number,
     lines: string[]
   ): string | null
+  /**
+   * Distribute multiple lines across ALL rows of the document starting from
+   * (blockId, rowId), crossing block boundaries.
+   *
+   * - lines[0] → current row's lane (merged with text before cursor)
+   * - lines[1] → next row in the document (next block's first row if needed)
+   * - lines[N] → N-th row after start; new blocks are created for overflow
+   *
+   * Returns the id of the last row that received text (for focus management).
+   */
+  distributeLaneAcrossRows(
+    blockId: string,
+    rowId: string,
+    lane: LaneKey,
+    cursorOffset: number,
+    lines: string[]
+  ): string | null
   updateRowLayout(blockId: string, rowId: string, patch: Partial<RowLayout>): void
 
   // Lane operations
@@ -211,7 +228,7 @@ function findRow(block: Block, rowId: string): Row | undefined {
 
 export const useDocumentStore = create<DocumentStore>()(
   temporal(
-  immer((set, _get) => ({
+  immer((set, get) => ({
     document: makeNewDocument(),
 
     setTitle: (title) => set(state => { state.document.title = title }),
@@ -436,6 +453,91 @@ export const useDocumentStore = create<DocumentStore>()(
       return extraRowIds.length > 0
         ? extraRowIds[extraRowIds.length - 1]
         : rowId
+    },
+
+    distributeLaneAcrossRows: (blockId, rowId, lane, cursorOffset, lines) => {
+      if (!lines.length) return null
+
+      // Read current state to know existing row order before mutating
+      const currentDoc = get().document
+      const allRowRefs: Array<{ blockId: string; rowId: string }> = []
+      currentDoc.blocks.forEach(b => {
+        if (!b.blockType || b.blockType === 'content') {
+          b.rows.forEach(r => allRowRefs.push({ blockId: b.id, rowId: r.id }))
+        }
+      })
+
+      const startIdx = allRowRefs.findIndex(r => r.blockId === blockId && r.rowId === rowId)
+      if (startIdx < 0) return null
+
+      // Pre-generate IDs for any new blocks we'll need to create
+      const existingAvailable = allRowRefs.length - startIdx
+      const newBlocksNeeded = Math.max(0, lines.length - existingAvailable)
+      const newBlockData = Array.from({ length: newBlocksNeeded }, () => ({
+        blockId: uuid(),
+        rowId: uuid(),
+      }))
+
+      set(state => {
+        const doc = state.document
+
+        // Rebuild flat row refs inside immer draft (same order)
+        const draftRefs: Array<{ blockId: string; rowId: string }> = []
+        doc.blocks.forEach(b => {
+          if (!b.blockType || b.blockType === 'content') {
+            b.rows.forEach(r => draftRefs.push({ blockId: b.id, rowId: r.id }))
+          }
+        })
+
+        const draftStart = draftRefs.findIndex(r => r.blockId === blockId && r.rowId === rowId)
+        if (draftStart < 0) return
+
+        const startBlock = findBlock(doc, blockId)
+        const startRow = startBlock ? findRow(startBlock, rowId) : undefined
+        if (!startRow) return
+
+        const textBefore = startRow[lane].text.slice(0, cursorOffset)
+        const textAfter  = startRow[lane].text.slice(cursorOffset)
+
+        for (let i = 0; i < lines.length; i++) {
+          const isLast = i === lines.length - 1
+          const lineText = (i === 0 ? textBefore : '') + lines[i] + (isLast ? textAfter : '')
+          const targetIdx = draftStart + i
+
+          if (targetIdx < draftRefs.length) {
+            // Fill existing row in whichever block it lives
+            const ref = draftRefs[targetIdx]
+            const b = findBlock(doc, ref.blockId)
+            const r = b ? findRow(b, ref.rowId) : undefined
+            if (r) r[lane].text = lineText
+          } else {
+            // Create a new block with one row for this line
+            const extra = newBlockData[targetIdx - draftRefs.length]
+            const newRow = makeRow()
+            newRow.id = extra.rowId
+            newRow[lane].text = lineText
+            newRow[lane].style = { ...startRow[lane].style }
+            newRow.layout = { ...startRow.layout }
+            const newBlock = makeBlock()
+            newBlock.id = extra.blockId
+            newBlock.rows = [newRow]
+            // Insert before any non-content tail blocks (back page, etc.)
+            const lastContentIdx = doc.blocks
+              .map((b, bi) => ({ b, bi }))
+              .filter(({ b }) => !b.blockType || b.blockType === 'content')
+              .pop()?.bi ?? doc.blocks.length - 1
+            doc.blocks.splice(lastContentIdx + 1, 0, newBlock)
+            // Keep draftRefs in sync for subsequent iterations
+            draftRefs.push({ blockId: extra.blockId, rowId: extra.rowId })
+          }
+        }
+      })
+
+      // Return last row ID for focus
+      const lastIdx = startIdx + lines.length - 1
+      if (lastIdx < allRowRefs.length) return allRowRefs[lastIdx].rowId
+      if (newBlockData.length > 0) return newBlockData[newBlockData.length - 1].rowId
+      return rowId
     },
 
     updateRowLayout: (blockId, rowId, patch) => set(state => {
