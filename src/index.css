@@ -33,8 +33,7 @@
 .lane-editor {
   outline: none;
   min-height: 1.2em;
-  word-break: break-word;
-  white-space: pre-wrap;
+  /* white-space and overflow are set via inline style in LaneEditor.tsx */
 }
 
 .lane-editor:focus {

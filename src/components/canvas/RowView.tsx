@@ -73,7 +73,8 @@ export const RowView = React.memo(function RowView({
 }: RowViewProps) {
   const splitRow = useDocumentStore(s => s.splitRow)
   const mergeRowWithPrev = useDocumentStore(s => s.mergeRowWithPrev)
-  const insertRowsAfterFromLines = useDocumentStore(s => s.insertRowsAfterFromLines)
+  const distributeLaneAcrossRows = useDocumentStore(s => s.distributeLaneAcrossRows)
+  const addBlock = useDocumentStore(s => s.addBlock)
   const setFocusedLane = useEditorStore(s => s.setFocusedLane)
 
   const { layout } = row
@@ -117,23 +118,32 @@ export const RowView = React.memo(function RowView({
     }
   }, [blockId, row.id, setFocusedLane])
 
-  // ArrowDown/ArrowUp — navigate to the adjacent row's same lane
+  // ArrowDown/ArrowUp — navigate across ALL rows in the document (cross-block)
   const handleNavigateRow = useCallback((
     lane: 'tibetan' | 'phonetic' | 'translation',
     direction: 'next' | 'prev'
   ) => {
     requestAnimationFrame(() => {
       const state = useDocumentStore.getState()
-      const block = state.document.blocks.find(b => b.id === blockId)
-      if (!block) return
-      const rowIdx = block.rows.findIndex(r => r.id === row.id)
-      const targetIdx = direction === 'next' ? rowIdx + 1 : rowIdx - 1
-      const targetRow = block.rows[targetIdx]
-      if (!targetRow) return
-      // When moving up, place the caret at the end of the previous row's lane
+      const doc = state.document
+
+      // Flat list of all content rows across all blocks
+      const allRowRefs: Array<{ blockId: string; rowId: string }> = []
+      doc.blocks.forEach(b => {
+        if (!b.blockType || b.blockType === 'content') {
+          b.rows.forEach(r => allRowRefs.push({ blockId: b.id, rowId: r.id }))
+        }
+      })
+
+      const currentIdx = allRowRefs.findIndex(r => r.blockId === blockId && r.rowId === row.id)
+      if (currentIdx < 0) return
+      const targetIdx = direction === 'next' ? currentIdx + 1 : currentIdx - 1
+      if (targetIdx < 0 || targetIdx >= allRowRefs.length) return
+
+      const target = allRowRefs[targetIdx]
       const placeAtEnd = direction === 'prev'
-      focusLane(blockId, targetRow.id, lane, placeAtEnd)
-      setFocusedLane({ blockId, rowId: targetRow.id, lane })
+      focusLane(target.blockId, target.rowId, lane, placeAtEnd)
+      setFocusedLane({ blockId: target.blockId, rowId: target.rowId, lane })
     })
   }, [blockId, row.id, setFocusedLane])
 
@@ -173,26 +183,76 @@ export const RowView = React.memo(function RowView({
     })
   }, [blockId, row.id, mergeRowWithPrev])
 
-  // Multi-line paste — distribute lines across consecutive rows
+  // Paste handler — distributes lines across ALL blocks in the document.
+  // Single-line paste: fills current row, then advances cursor to next row
+  //   (so repeated Ctrl+V fills block 1, block 2, block 3… in sequence).
+  // Multi-line paste: distributes N lines across N rows, cursor stays at last.
   const handleMultiLinePaste = useCallback((
     lane: 'tibetan' | 'phonetic' | 'translation',
     cursorOffset: number,
     lines: string[]
   ) => {
-    const lastRowId = insertRowsAfterFromLines(blockId, row.id, lane, cursorOffset, lines)
+    const lastRowId = distributeLaneAcrossRows(blockId, row.id, lane, cursorOffset, lines)
 
-    // Focus the last created row's matching lane
+    // Outer rAF runs in the same frame as LaneEditor's useEffect rAF (which tries to
+    // restore the caret in the just-edited lane). The inner rAF fires one frame later,
+    // AFTER the useEffect rAF has already run (and been neutralised by the activeElement
+    // guard added there). This prevents a race where useEffect steals focus back.
     requestAnimationFrame(() => {
       if (!lastRowId) return
       const state = useDocumentStore.getState()
-      const block = state.document.blocks.find(b => b.id === blockId)
-      if (!block) return
-      const lastRow = block.rows.find(r => r.id === lastRowId)
-      if (!lastRow) return
-      focusLane(blockId, lastRowId, lane, true)
-      setFocusedLane({ blockId, rowId: lastRowId, lane })
+
+      // Find which block contains lastRowId
+      let lastBlockId = blockId
+      for (const b of state.document.blocks) {
+        if (b.rows.some(r => r.id === lastRowId)) {
+          lastBlockId = b.id
+          break
+        }
+      }
+
+      if (lines.length === 1) {
+        // Single-line: advance to the NEXT row so repeated Ctrl+V fills rows in sequence
+        const allRowRefs: Array<{ blockId: string; rowId: string }> = []
+        state.document.blocks.forEach(b => {
+          if (!b.blockType || b.blockType === 'content') {
+            b.rows.forEach(r => allRowRefs.push({ blockId: b.id, rowId: r.id }))
+          }
+        })
+        const lastIdx = allRowRefs.findIndex(r => r.blockId === lastBlockId && r.rowId === lastRowId)
+        const next = allRowRefs[lastIdx + 1]
+
+        if (next) {
+          // Existing next row — focus it one frame later so useEffect rAF settles first
+          requestAnimationFrame(() => {
+            focusLane(next.blockId, next.rowId, lane)
+            setFocusedLane({ blockId: next.blockId, rowId: next.rowId, lane })
+          })
+          return
+        }
+
+        // No next row — create a new block then focus it (needs two extra frames)
+        addBlock()
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            const fresh = useDocumentStore.getState().document
+            const newBlock = [...fresh.blocks].reverse().find(b => !b.blockType || b.blockType === 'content')
+            if (newBlock && newBlock.rows[0]) {
+              focusLane(newBlock.id, newBlock.rows[0].id, lane)
+              setFocusedLane({ blockId: newBlock.id, rowId: newBlock.rows[0].id, lane })
+            }
+          })
+        })
+        return
+      }
+
+      // Multi-line: focus the last filled row one frame later
+      requestAnimationFrame(() => {
+        focusLane(lastBlockId, lastRowId, lane, true)
+        setFocusedLane({ blockId: lastBlockId, rowId: lastRowId, lane })
+      })
     })
-  }, [blockId, row.id, insertRowsAfterFromLines, setFocusedLane])
+  }, [blockId, row.id, distributeLaneAcrossRows, addBlock, setFocusedLane])
 
   return (
     <div
