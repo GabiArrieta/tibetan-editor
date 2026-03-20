@@ -1,0 +1,55 @@
+@import "tailwindcss";
+
+@layer base {
+  *, *::before, *::after {
+    box-sizing: border-box;
+  }
+
+  html, body, #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    font-family: system-ui, -apple-system, sans-serif;
+    background-color: #1a1a2e;
+    color: #e2e8f0;
+  }
+}
+
+/* A4 page canvas styling */
+.page-canvas {
+  width: 210mm;
+  min-height: 297mm;
+  background: white;
+  color: #111;
+  position: relative;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.35);
+  border-radius: 2px;
+}
+
+/* Lane editor - contenteditable */
+.lane-editor {
+  outline: none;
+  min-height: 1.2em;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.lane-editor:focus {
+  background-color: rgba(99, 102, 241, 0.04);
+  border-radius: 2px;
+}
+
+/* Scrollbar styling for sidebar */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.15);
+  border-radius: 2px;
+}
