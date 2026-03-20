@@ -121,8 +121,9 @@ export function DocumentBrowser({ onClose }: DocumentBrowserProps) {
     setShareLoading(false)
   }
 
-  const handleRemoveCollaborator = async (userId: string) => {
+  const handleRemoveCollaborator = async (userId: string, displayName: string) => {
     if (!shareDocId) return
+    if (!confirm(`¿Quitar el acceso de ${displayName}? Esta persona ya no podrá ver ni editar el documento.`)) return
     await removeCollaborator(shareDocId, userId)
     const updated = await listCollaborators(shareDocId)
     setCollaborators(updated.data ?? [])
@@ -257,21 +258,24 @@ export function DocumentBrowser({ onClose }: DocumentBrowserProps) {
                 <div>
                   <p className="text-[10px] text-slate-400 uppercase tracking-wide mb-1.5">Accesos actuales</p>
                   <div className="space-y-1">
-                    {collaborators.map(c => (
-                      <div key={c.user_id} className="flex items-center justify-between bg-slate-700/50 rounded px-2 py-1">
-                        <div>
-                          <p className="text-[11px] text-slate-300 truncate max-w-[130px]">{c.user_id.slice(0, 8)}…</p>
-                          <p className="text-[10px] text-slate-500">{c.role}</p>
+                    {collaborators.map(c => {
+                      const label = c.email ?? c.display_name ?? `${c.user_id.slice(0, 8)}…`
+                      return (
+                        <div key={c.user_id} className="flex items-center justify-between bg-slate-700/50 rounded px-2 py-1.5 gap-1">
+                          <div className="min-w-0">
+                            <p className="text-[11px] text-slate-300 truncate" title={c.email}>{label}</p>
+                            <p className="text-[10px] text-slate-500 capitalize">{c.role}</p>
+                          </div>
+                          <button
+                            onClick={() => handleRemoveCollaborator(c.user_id, label)}
+                            className="text-red-500 hover:text-red-400 text-[11px] shrink-0"
+                            title="Quitar acceso"
+                          >
+                            Quitar
+                          </button>
                         </div>
-                        <button
-                          onClick={() => handleRemoveCollaborator(c.user_id)}
-                          className="text-red-500 hover:text-red-400 text-[11px]"
-                          title="Quitar acceso"
-                        >
-                          Quitar
-                        </button>
-                      </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 </div>
               )}

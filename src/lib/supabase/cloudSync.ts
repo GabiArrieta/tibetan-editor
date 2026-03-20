@@ -47,20 +47,50 @@ export async function saveDocumentToCloud(
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: 'No autenticado.' }
 
-  const payload = {
-    id: doc.id,
-    owner_id: user.id,
-    title: doc.title,
-    content: doc as unknown as Record<string, unknown>,
+  // Check if this document already exists in the cloud.
+  // We NEVER include owner_id on UPDATE to prevent privilege escalation:
+  // an editor collaborator calling save must not be able to overwrite owner_id
+  // with their own user ID (which would steal document ownership).
+  const { data: existing } = await supabase
+    .from('documents')
+    .select('id')
+    .eq('id', doc.id)
+    .maybeSingle()
+
+  let data: { id: string; updated_at: string } | null = null
+  let error: { message: string } | null = null
+
+  if (existing) {
+    // UPDATE: omit owner_id entirely — only title and content change
+    const result = await supabase
+      .from('documents')
+      .update({
+        title: doc.title,
+        content: doc as unknown as Record<string, unknown>,
+      })
+      .eq('id', doc.id)
+      .select('id, updated_at')
+      .single()
+    data = result.data
+    error = result.error
+  } else {
+    // INSERT: include owner_id on first save only
+    const result = await supabase
+      .from('documents')
+      .insert({
+        id: doc.id,
+        owner_id: user.id,
+        title: doc.title,
+        content: doc as unknown as Record<string, unknown>,
+      })
+      .select('id, updated_at')
+      .single()
+    data = result.data
+    error = result.error
   }
 
-  const { data, error } = await supabase
-    .from('documents')
-    .upsert(payload, { onConflict: 'id' })
-    .select('id, updated_at')
-    .single()
-
   if (error) return { error: error.message }
+  if (!data) return { error: 'No se recibió respuesta del servidor.' }
 
   return { data: { cloudId: data.id, savedAt: data.updated_at } }
 }
@@ -198,18 +228,50 @@ export async function removeCollaborator(
 }
 
 /**
- * Listar colaboradores de un documento.
+ * Listar colaboradores de un documento, incluyendo su perfil (email / display_name).
+ * Requiere que la tabla profiles exista (schema-v2.sql).
  */
 export async function listCollaborators(
   documentId: string
 ): Promise<CloudResult<DbCollaborator[]>> {
   if (!supabase) return { error: 'Supabase no configurado.' }
 
+  // Join con profiles para obtener email y nombre visible
   const { data, error } = await supabase
     .from('document_collaborators')
-    .select('*')
+    .select(`
+      document_id,
+      user_id,
+      role,
+      invited_by,
+      created_at,
+      profiles:user_id ( email, display_name )
+    `)
     .eq('document_id', documentId)
 
-  if (error) return { error: error.message }
-  return { data: data ?? [] }
+  if (error) {
+    // Si profiles no existe todavía, fallback a la query básica
+    const { data: fallback, error: fe } = await supabase
+      .from('document_collaborators')
+      .select('*')
+      .eq('document_id', documentId)
+    if (fe) return { error: fe.message }
+    return { data: fallback ?? [] }
+  }
+
+  // Aplanar el join: mover email y display_name al nivel raíz
+  const enriched: DbCollaborator[] = (data ?? []).map((row: Record<string, unknown>) => {
+    const profile = row.profiles as { email?: string; display_name?: string } | null
+    return {
+      document_id: row.document_id as string,
+      user_id: row.user_id as string,
+      role: row.role as string,
+      invited_by: row.invited_by as string | undefined,
+      created_at: row.created_at as string,
+      email: profile?.email,
+      display_name: profile?.display_name,
+    } as DbCollaborator
+  })
+
+  return { data: enriched }
 }

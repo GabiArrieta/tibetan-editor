@@ -46,8 +46,12 @@ export interface DbCollaborator {
   document_id: string
   user_id: string
   role: 'viewer' | 'editor'
-  invited_by: string | null
+  invited_by?: string | null
   created_at: string
+  /** Populated from profiles join when available */
+  email?: string
+  /** Populated from profiles join when available */
+  display_name?: string
 }
 
 export interface AccessibleDocument {

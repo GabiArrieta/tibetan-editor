@@ -11,6 +11,7 @@ import { v4 as uuid } from 'uuid'
 import type {
   TibetanDocument,
   Block,
+  BlockType,
   Row,
   Lane,
   LaneKey,
@@ -20,6 +21,9 @@ import type {
   FontEntry,
   StylePreset,
   PageSettings,
+  SpecialPageData,
+  CoverPageData,
+  BackPageData,
 } from '../types/document'
 import {
   DEFAULT_PAGE_SETTINGS,
@@ -28,7 +32,12 @@ import {
   DEFAULT_TRANSLATION_STYLE,
   DEFAULT_ROW_LAYOUT,
   DEFAULT_BLOCK_LAYOUT,
+  DEFAULT_COVER_DATA,
+  DEFAULT_BACK_DATA,
 } from '../types/document'
+
+// Re-export so callers can import helpers without touching the types barrel
+export type { BlockType, SpecialPageData, CoverPageData, BackPageData }
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -52,10 +61,33 @@ export function makeRow(overrides?: Partial<Row>): Row {
 export function makeBlock(overrides?: Partial<Block>): Block {
   return {
     id: uuid(),
+    blockType: 'content',
     label: undefined,
     rows: [makeRow()],
     layout: { ...DEFAULT_BLOCK_LAYOUT },
     ...overrides,
+  }
+}
+
+export function makeCoverBlock(): Block {
+  return {
+    id: uuid(),
+    blockType: 'cover',
+    label: 'Portada',
+    rows: [],
+    layout: { ...DEFAULT_BLOCK_LAYOUT },
+    special: { type: 'cover', cover: { ...DEFAULT_COVER_DATA } },
+  }
+}
+
+export function makeBackBlock(): Block {
+  return {
+    id: uuid(),
+    blockType: 'back',
+    label: 'Página final',
+    rows: [],
+    layout: { ...DEFAULT_BLOCK_LAYOUT },
+    special: { type: 'back', back: { ...DEFAULT_BACK_DATA } },
   }
 }
 
@@ -97,9 +129,13 @@ interface DocumentStore {
 
   // Block operations
   addBlock(): void
+  addCoverBlock(): void
+  addBackBlock(): void
   removeBlock(blockId: string): void
   updateBlockLayout(blockId: string, patch: Partial<BlockLayout>): void
   updateBlockLabel(blockId: string, label: string): void
+  updateBlockType(blockId: string, blockType: BlockType): void
+  updateSpecialData(blockId: string, special: SpecialPageData): void
   moveBlock(blockId: string, direction: 'up' | 'down'): void
 
   // Row operations
@@ -115,6 +151,10 @@ interface DocumentStore {
   // Lane operations
   updateLaneText(blockId: string, rowId: string, lane: LaneKey, text: string): void
   updateLaneStyle(blockId: string, rowId: string, lane: LaneKey, patch: Partial<TextStyle>): void
+
+  // Comment refs on rows (commentIds are managed by commentStore; rows only carry IDs)
+  addCommentIdToRow(blockId: string, rowId: string, commentId: string): void
+  removeCommentIdFromRow(blockId: string, rowId: string, commentId: string): void
 }
 
 // ---------------------------------------------------------------------------
@@ -168,8 +208,21 @@ export const useDocumentStore = create<DocumentStore>()(
 
     addBlock: () => set(state => { state.document.blocks.push(makeBlock()) }),
 
+    addCoverBlock: () => set(state => {
+      const hasCover = state.document.blocks.some(b => b.blockType === 'cover')
+      if (!hasCover) state.document.blocks.unshift(makeCoverBlock())
+    }),
+
+    addBackBlock: () => set(state => {
+      const hasBack = state.document.blocks.some(b => b.blockType === 'back')
+      if (!hasBack) state.document.blocks.push(makeBackBlock())
+    }),
+
     removeBlock: (blockId) => set(state => {
-      if (state.document.blocks.length <= 1) return
+      const isContent = (b: Block) => !b.blockType || b.blockType === 'content'
+      const contentBlocks = state.document.blocks.filter(isContent)
+      const block = state.document.blocks.find(b => b.id === blockId)
+      if (block && isContent(block) && contentBlocks.length <= 1) return
       state.document.blocks = state.document.blocks.filter(b => b.id !== blockId)
     }),
 
@@ -181,6 +234,16 @@ export const useDocumentStore = create<DocumentStore>()(
     updateBlockLabel: (blockId, label) => set(state => {
       const b = findBlock(state.document, blockId)
       if (b) b.label = label
+    }),
+
+    updateBlockType: (blockId, blockType) => set(state => {
+      const b = findBlock(state.document, blockId)
+      if (b) b.blockType = blockType
+    }),
+
+    updateSpecialData: (blockId, special) => set(state => {
+      const b = findBlock(state.document, blockId)
+      if (b) b.special = special
     }),
 
     moveBlock: (blockId, direction) => set(state => {
@@ -297,6 +360,26 @@ export const useDocumentStore = create<DocumentStore>()(
       if (!b) return
       const r = findRow(b, rowId)
       if (r) Object.assign(r[lane].style, patch)
+    }),
+
+    // Comment refs
+
+    addCommentIdToRow: (blockId, rowId, commentId) => set(state => {
+      const b = findBlock(state.document, blockId)
+      if (!b) return
+      const r = findRow(b, rowId)
+      if (!r) return
+      if (!r.commentIds) r.commentIds = []
+      if (!r.commentIds.includes(commentId)) r.commentIds.push(commentId)
+    }),
+
+    removeCommentIdFromRow: (blockId, rowId, commentId) => set(state => {
+      const b = findBlock(state.document, blockId)
+      if (!b) return
+      const r = findRow(b, rowId)
+      if (r?.commentIds) {
+        r.commentIds = r.commentIds.filter(id => id !== commentId)
+      }
     }),
   }))
 )
